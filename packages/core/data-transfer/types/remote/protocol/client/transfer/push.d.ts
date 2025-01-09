@@ -1,12 +1,12 @@
-import type { CreateTransferMessage } from './utils';
-import type { IEntity, ILink, IConfiguration, IAsset } from '../../../../common-entities';
+import type { CreateTransferMessage, TransferAssetFlow } from './utils';
+import type { IEntity, ILink, IConfiguration } from '../../../../common-entities';
 
 export type TransferPushMessage = CreateTransferMessage<
   'step',
   | TransferStepCommands<'entities', IEntity[]>
   | TransferStepCommands<'links', ILink[]>
   | TransferStepCommands<'configuration', IConfiguration[]>
-  | TransferStepCommands<'assets', TransferAssetFlow[] | null>
+  | TransferStepCommands<'assets', TransferAssetFlow[]>
 >;
 
 export type GetTransferPushStreamData<T extends TransferPushStep> = {
@@ -15,7 +15,9 @@ export type GetTransferPushStreamData<T extends TransferPushStep> = {
     step: key;
   } & TransferPushMessage;
 }[T] extends { data: infer U }
-  ? U
+  ? U extends any[] // Check if U is already an array
+    ? U // If U is an array, keep it as-is
+    : U[] // Otherwise, wrap it in an array
   : never;
 
 export type TransferPushStep = TransferPushMessage['step'];
@@ -24,8 +26,4 @@ type TransferStepCommands<T extends string, U> = { step: T } & TransferStepFlow<
 
 type TransferStepFlow<U> = { action: 'start' } | { action: 'stream'; data: U } | { action: 'end' };
 
-type TransferAssetFlow = { assetID: string } & (
-  | { action: 'start'; data: Omit<IAsset, 'stream'> }
-  | { action: 'stream'; data: Buffer }
-  | { action: 'end' }
-);
+export type Stats = { started: number; finished: number };

@@ -9,23 +9,26 @@
  */
 const crypto = require('crypto');
 const _ = require('lodash');
-const urljoin = require('url-join');
 const { getService } = require('../utils');
-const getGrantConfig = require('./grant-config');
-
 const usersPermissionsActions = require('./users-permissions-actions');
 
 const initGrant = async (pluginStore) => {
-  const apiPrefix = strapi.config.get('api.rest.prefix');
-  const baseURL = urljoin(strapi.config.server.url, apiPrefix, 'auth');
+  const allProviders = getService('providers-registry').getAll();
 
-  const grantConfig = getGrantConfig(baseURL);
+  const grantConfig = Object.entries(allProviders).reduce((acc, [name, provider]) => {
+    const { icon, enabled, grantConfig } = provider;
+
+    acc[name] = {
+      icon,
+      enabled,
+      ...grantConfig,
+    };
+    return acc;
+  }, {});
 
   const prevGrantConfig = (await pluginStore.get({ key: 'grant' })) || {};
-  // store grant auth config to db
-  // when plugin_users-permissions_grant is not existed in db
-  // or we have added/deleted provider here.
-  if (!prevGrantConfig || !_.isEqual(_.keys(prevGrantConfig), _.keys(grantConfig))) {
+
+  if (!prevGrantConfig || !_.isEqual(prevGrantConfig, grantConfig)) {
     // merge with the previous provider config.
     _.keys(grantConfig).forEach((key) => {
       if (key in prevGrantConfig) {
@@ -104,13 +107,13 @@ module.exports = async ({ strapi }) => {
   await initEmails(pluginStore);
   await initAdvancedOptions(pluginStore);
 
-  await strapi.admin.services.permission.actionProvider.registerMany(
-    usersPermissionsActions.actions
-  );
+  await strapi
+    .service('admin::permission')
+    .actionProvider.registerMany(usersPermissionsActions.actions);
 
   await getService('users-permissions').initialize();
 
-  if (!strapi.config.get('plugin.users-permissions.jwtSecret')) {
+  if (!strapi.config.get('plugin::users-permissions.jwtSecret')) {
     if (process.env.NODE_ENV !== 'development') {
       throw new Error(
         `Missing jwtSecret. Please, set configuration variable "jwtSecret" for the users-permissions plugin in config/plugins.js (ex: you can generate one using Node with \`crypto.randomBytes(16).toString('base64')\`).
@@ -120,7 +123,7 @@ For security reasons, prefer storing the secret in an environment variable and r
 
     const jwtSecret = crypto.randomBytes(16).toString('base64');
 
-    strapi.config.set('plugin.users-permissions.jwtSecret', jwtSecret);
+    strapi.config.set('plugin::users-permissions.jwtSecret', jwtSecret);
 
     if (!process.env.JWT_SECRET) {
       const envPath = process.env.ENV_PATH || '.env';

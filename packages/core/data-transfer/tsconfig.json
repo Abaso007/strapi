@@ -1,8 +1,10 @@
 {
   "extends": "tsconfig/base.json",
-  "compilerOptions": {
-    "outDir": "dist"
-  },
-  "include": ["types", "src"],
-  "exclude": ["node_modules", "**/__tests__/**"]
+  "include": [
+    "types",
+    "src",
+    "packup.config.ts",
+    "../strapi/src/cli/commands/__tests__/commands.test.utils.ts"
+  ],
+  "exclude": ["node_modules"]
 }

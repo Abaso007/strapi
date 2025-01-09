@@ -1,7 +1,7 @@
 module.exports = {
   root: true,
-  extends: ['custom/back'],
-  rules: {
-    'import/no-extraneous-dependencies': 'off',
+  extends: ['custom/back/typescript'],
+  parserOptions: {
+    project: ['./tsconfig.json'],
   },
 };

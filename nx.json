@@ -22,19 +22,16 @@
   "targetDefaults": {
     "build": {
       "inputs": ["production", "^production"],
-      "dependsOn": ["^build"]
-    },
-    "build:ts": {
-      "inputs": ["production", "^production", "{workspaceRoot}/packages/utils/tsconfig/**/*"],
-      "dependsOn": ["^build:ts"]
+      "dependsOn": ["^build"],
+      "cache": true
     },
     "test:unit": {
       "inputs": ["default", "{workspaceRoot}/jest-preset.unit.js"],
-      "dependsOn": ["build:ts"]
+      "cache": true
     },
     "test:front": {
       "inputs": ["default", "{workspaceRoot}/jest-preset.front.js"],
-      "dependsOn": ["^build"]
+      "cache": true
     },
     "lint": {
       "inputs": [
@@ -45,14 +42,62 @@
         "{projectRoot}/tsconfig.eslint.json",
         "{workspaceRoot}/packages/utils/eslint-config-custom/**/*"
       ],
-      "dependsOn": ["build:ts"]
+      "cache": true
     }
   },
-  "tasksRunnerOptions": {
-    "default": {
-      "runner": "nx/tasks-runners/default",
-      "options": {
-        "cacheableOperations": ["build", "build:ts", "lint", "test:unit", "test:front"]
+  "useInferencePlugins": false,
+  "pluginsConfig": {
+    "@nx/js": {
+      "analyzeSourceFiles": false
+    }
+  },
+  "release": {
+    "projects": ["packages/**/*"],
+    "changelog": {
+      "workspaceChangelog": {
+        "file": false,
+        "createRelease": "github"
+      }
+    },
+    "version": {
+      "conventionalCommits": false
+    },
+    "git": {
+      "commitMessage": "release: {version}"
+    },
+    "conventionalCommits": {
+      "types": {
+        "docs": {
+          "changelog": {
+            "title": "📚 Documentation Changes"
+          }
+        },
+        "enhancement": {
+          "changelog": {
+            "title": "💅 Enhancement"
+          }
+        },
+        "feat": {
+          "changelog": {
+            "title": "🚀 New feature"
+          }
+        },
+        "fix": {
+          "changelog": {
+            "title": "🔥 Bug fix"
+          }
+        },
+        "security": {
+          "semverBump": "patch",
+          "changelog": {
+            "title": "🚨 Security"
+          }
+        },
+        "chore": {
+          "changelog": {
+            "title": "⚙️ Chore"
+          }
+        }
       }
     }
   }

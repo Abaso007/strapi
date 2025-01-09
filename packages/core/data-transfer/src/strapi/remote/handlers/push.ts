@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { Writable, PassThrough } from 'stream';
+import { type Core } from '@strapi/types';
 
 import type { TransferFlow, Step } from '../flows';
 import type { TransferStage, IAsset, Protocol } from '../../../../types';
@@ -34,6 +35,10 @@ export interface PushHandler extends Handler {
    */
   streams?: { [stage in TransferStage]?: Writable };
 
+  stats: {
+    [stage in Exclude<TransferStage, 'schemas'>]: Protocol.Client.Stats;
+  };
+
   /**
    * Holds all the transferred assets for the current transfer handler (one registry per connection)
    */
@@ -62,24 +67,24 @@ export interface PushHandler extends Handler {
   /**
    * Callback when receiving a regular transfer message
    */
-  onTransferMessage(msg: Protocol.client.TransferMessage): Promise<unknown> | unknown;
+  onTransferMessage(msg: Protocol.Client.TransferMessage): Promise<unknown> | unknown;
 
   /**
    * Callback when receiving a transfer action message
    */
-  onTransferAction(msg: Protocol.client.Action): Promise<unknown> | unknown;
+  onTransferAction(msg: Protocol.Client.Action): Promise<unknown> | unknown;
 
   /**
    * Callback when receiving a transfer step message
    */
-  onTransferStep(msg: Protocol.client.TransferPushMessage): Promise<unknown> | unknown;
+  onTransferStep(msg: Protocol.Client.TransferPushMessage): Promise<unknown> | unknown;
 
   /**
    * Start streaming an asset
    */
   streamAsset(
     this: PushHandler,
-    payload: Protocol.client.GetTransferPushStreamData<'assets'>
+    payload: Protocol.Client.GetTransferPushStreamData<'assets'>
   ): Promise<void>;
 
   // Transfer Flow
@@ -120,7 +125,26 @@ export const createPushController = handlerControllerFactory<Partial<PushHandler
   verifyAuth(this: PushHandler) {
     return proto.verifyAuth.call(this, TRANSFER_KIND);
   },
-
+  onInfo(message) {
+    this.diagnostics?.report({
+      details: {
+        message,
+        origin: 'push-handler',
+        createdAt: new Date(),
+      },
+      kind: 'info',
+    });
+  },
+  onWarning(message) {
+    this.diagnostics?.report({
+      details: {
+        message,
+        createdAt: new Date(),
+        origin: 'push-handler',
+      },
+      kind: 'warning',
+    });
+  },
   cleanup(this: PushHandler) {
     proto.cleanup.call(this);
 
@@ -205,12 +229,20 @@ export const createPushController = handlerControllerFactory<Partial<PushHandler
       await this.respond(undefined, new Error('Missing uuid in message'));
     }
 
-    const { uuid, type } = msg;
+    if (proto.hasUUID(msg.uuid)) {
+      const previousResponse = proto.response;
+      if (previousResponse?.uuid === msg.uuid) {
+        await this.respond(previousResponse?.uuid, previousResponse.e, previousResponse.data);
+      }
+      return;
+    }
 
+    const { uuid, type } = msg;
+    proto.addUUID(uuid);
     // Regular command message (init, end, status)
     if (type === 'command') {
       const { command } = msg;
-
+      this.onInfo(`received command:${command} uuid:${uuid}`);
       await this.executeAndRespond(uuid, () => {
         this.assertValidTransferCommand(command);
 
@@ -218,13 +250,13 @@ export const createPushController = handlerControllerFactory<Partial<PushHandler
         if (command === 'status') {
           return this.status();
         }
-
         return this[command](msg.params);
       });
     }
 
     // Transfer message (the transfer must be init first)
     else if (type === 'transfer') {
+      this.onInfo(`received transfer action:${msg.action} step:${msg.kind} uuid:${uuid}`);
       await this.executeAndRespond(uuid, async () => {
         await this.verifyAuth();
 
@@ -248,7 +280,7 @@ export const createPushController = handlerControllerFactory<Partial<PushHandler
     }
 
     if (kind === 'step') {
-      return this.onTransferStep(msg as Protocol.client.TransferPushMessage);
+      return this.onTransferStep(msg as Protocol.Client.TransferPushMessage);
     }
   },
 
@@ -304,6 +336,8 @@ export const createPushController = handlerControllerFactory<Partial<PushHandler
 
       await this.createWritableStreamForStep(stage);
 
+      this.stats[stage] = { started: 0, finished: 0 };
+
       return { ok: true };
     }
 
@@ -323,12 +357,17 @@ export const createPushController = handlerControllerFactory<Partial<PushHandler
       }
 
       // For all other steps
-      await Promise.all(msg.data.map((item) => writeAsync(stream, item)));
+      await Promise.all(
+        msg.data.map(async (item) => {
+          this.stats[stage].started += 1;
+          await writeAsync(stream, item);
+          this.stats[stage].finished += 1;
+        })
+      );
     }
 
     if (msg.action === 'end') {
       this.unlockTransferStep(stage);
-
       const stream = this.streams?.[stage];
 
       if (stream && !stream.closed) {
@@ -339,7 +378,7 @@ export const createPushController = handlerControllerFactory<Partial<PushHandler
 
       delete this.streams?.[stage];
 
-      return { ok: true };
+      return { ok: true, stats: this.stats[stage] };
     }
   },
 
@@ -360,14 +399,16 @@ export const createPushController = handlerControllerFactory<Partial<PushHandler
 
       this.flow?.set(step);
     }
-
+    if (action === 'bootstrap') {
+      return this.provider?.[action](this.diagnostics);
+    }
     return this.provider?.[action]();
   },
 
   async streamAsset(this: PushHandler, payload) {
     const assetsStream = this.streams?.assets;
 
-    // TODO: close the stream upong receiving an 'end' event instead
+    // TODO: close the stream upon receiving an 'end' event instead
     if (payload === null) {
       this.streams?.assets?.end();
       return;
@@ -381,6 +422,7 @@ export const createPushController = handlerControllerFactory<Partial<PushHandler
       }
 
       if (action === 'start') {
+        this.stats.assets.started += 1;
         this.assets[assetID] = { ...item.data, stream: new PassThrough() };
         writeAsync(assetsStream, this.assets[assetID]);
       }
@@ -390,7 +432,6 @@ export const createPushController = handlerControllerFactory<Partial<PushHandler
         // We need to transform it back into a Buffer instance
         const rawBuffer = item.data as unknown as { type: 'Buffer'; data: Uint8Array };
         const chunk = Buffer.from(rawBuffer.data);
-
         await writeAsync(this.assets[assetID].stream, chunk);
       }
 
@@ -399,6 +440,7 @@ export const createPushController = handlerControllerFactory<Partial<PushHandler
           const { stream: assetStream } = this.assets[assetID];
           assetStream
             .on('close', () => {
+              this.stats.assets.finished += 1;
               delete this.assets[assetID];
               resolve();
             })
@@ -422,8 +464,8 @@ export const createPushController = handlerControllerFactory<Partial<PushHandler
 
   async init(
     this: PushHandler,
-    params: Protocol.client.GetCommandParams<'init'>
-  ): Promise<Protocol.server.Payload<Protocol.server.InitMessage>> {
+    params: Protocol.Client.GetCommandParams<'init'>
+  ): Promise<Protocol.Server.Payload<Protocol.Server.InitMessage>> {
     if (this.transferID || this.provider) {
       throw new Error('Transfer already in progress');
     }
@@ -435,14 +477,25 @@ export const createPushController = handlerControllerFactory<Partial<PushHandler
 
     this.assets = {};
     this.streams = {};
+    this.stats = {
+      assets: { started: 0, finished: 0 },
+      configuration: { started: 0, finished: 0 },
+      entities: { started: 0, finished: 0 },
+      links: { started: 0, finished: 0 },
+    };
 
     this.flow = createFlow(DEFAULT_TRANSFER_FLOW);
 
     this.provider = createLocalStrapiDestinationProvider({
       ...params.options,
       autoDestroy: false,
-      getStrapi: () => strapi,
+      getStrapi: () => strapi as Core.Strapi,
     });
+
+    this.provider.onWarning = (message) => {
+      this.onWarning(message);
+      strapi.log.warn(message);
+    };
 
     return { transferID: this.transferID };
   },
@@ -466,11 +519,11 @@ export const createPushController = handlerControllerFactory<Partial<PushHandler
 
   async end(
     this: PushHandler,
-    params: Protocol.client.GetCommandParams<'end'>
-  ): Promise<Protocol.server.Payload<Protocol.server.EndMessage>> {
+    params: Protocol.Client.GetCommandParams<'end'>
+  ): Promise<Protocol.Server.Payload<Protocol.Server.EndMessage>> {
     await this.verifyAuth();
 
-    if (this.transferID !== params.transferID) {
+    if (this.transferID !== params?.transferID) {
       throw new ProviderTransferError('Bad transfer ID provided');
     }
 

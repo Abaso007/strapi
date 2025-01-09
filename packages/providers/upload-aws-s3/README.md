@@ -49,8 +49,10 @@ module.exports = ({ env }) => ({
         baseUrl: env('CDN_URL'),
         rootPath: env('CDN_ROOT_PATH'),
         s3Options: {
-          accessKeyId: env('AWS_ACCESS_KEY_ID'),
-          secretAccessKey: env('AWS_ACCESS_SECRET'),
+          credentials: {
+            accessKeyId: env('AWS_ACCESS_KEY_ID'),
+            secretAccessKey: env('AWS_ACCESS_SECRET'),
+          },
           region: env('AWS_REGION'),
           params: {
             ACL: env('AWS_ACL', 'public-read'),
@@ -70,11 +72,13 @@ module.exports = ({ env }) => ({
 });
 ```
 
-### Configuration for a private S3 bucket
+### Configuration for a private S3 bucket and signed URLs
 
-If your bucket is configured to be private, you will need to set the `ACL` option to `private` in the `params` object. This will ensure that the signed URL is generated with the correct permissions.
+If your bucket is configured to be private, you will need to set the `ACL` option to `private` in the `params` object. This will ensure file URLs are signed.
 
-You can also define the expiration time of the signed URL by setting the `signedUrlExpires` option in the `params` object. The default value is 7 days.
+**Note:** If you are using a CDN, the URLs will not be signed.
+
+You can also define the expiration time of the signed URL by setting the `signedUrlExpires` option in the `params` object. The default value is 15 minutes.
 
 `./config/plugins.js`
 
@@ -85,12 +89,14 @@ module.exports = ({ env }) => ({
     config: {
       provider: 'aws-s3',
       providerOptions: {
-        accessKeyId: env('AWS_ACCESS_KEY_ID'),
-        secretAccessKey: env('AWS_ACCESS_SECRET'),
+        credentials: {
+          accessKeyId: env('AWS_ACCESS_KEY_ID'),
+          secretAccessKey: env('AWS_ACCESS_SECRET'),
+        },
         region: env('AWS_REGION'),
         params: {
           ACL: 'private', // <== set ACL to private
-          signedUrlExpires: env('AWS_SIGNED_URL_EXPIRES', 60 * 60 * 24 * 7),
+          signedUrlExpires: env('AWS_SIGNED_URL_EXPIRES', 15 * 60),
           Bucket: env('AWS_BUCKET'),
         },
       },
@@ -107,7 +113,7 @@ module.exports = ({ env }) => ({
 
 #### Configuration for S3 compatible services
 
-This plugin may work with S3 compatible services by using the `endpoint` option instead of `region`. Scaleway example:
+This plugin may work with S3 compatible services by using the `endpoint`. Scaleway example:
 `./config/plugins.js`
 
 ```js
@@ -117,9 +123,12 @@ module.exports = ({ env }) => ({
     config: {
       provider: 'aws-s3',
       providerOptions: {
-        accessKeyId: env('SCALEWAY_ACCESS_KEY_ID'),
-        secretAccessKey: env('SCALEWAY_ACCESS_SECRET'),
-        endpoint: env('SCALEWAY_ENDPOINT'), // e.g. "s3.fr-par.scw.cloud"
+        credentials: {
+          accessKeyId: env('SCALEWAY_ACCESS_KEY_ID'),
+          secretAccessKey: env('SCALEWAY_ACCESS_SECRET'),
+        },
+        region: env('SCALEWAY_REGION'), // e.g "fr-par"
+        endpoint: env('SCALEWAY_ENDPOINT'), // e.g. "https://s3.fr-par.scw.cloud"
         params: {
           Bucket: env('SCALEWAY_BUCKET'),
         },
@@ -150,14 +159,14 @@ module.exports = [
             "'self'",
             'data:',
             'blob:',
-            'dl.airtable.com',
+            'market-assets.strapi.io',
             'yourBucketName.s3.yourRegion.amazonaws.com',
           ],
           'media-src': [
             "'self'",
             'data:',
             'blob:',
-            'dl.airtable.com',
+            'market-assets.strapi.io',
             'yourBucketName.s3.yourRegion.amazonaws.com',
           ],
           upgradeInsecureRequests: null,
@@ -169,7 +178,7 @@ module.exports = [
 ];
 ```
 
-If you use dots in your bucket name, the url of the ressource is in directory style (`s3.yourRegion.amazonaws.com/your.bucket.name/image.jpg`) instead of `yourBucketName.s3.yourRegion.amazonaws.com/image.jpg`. Then only add `s3.yourRegion.amazonaws.com` to img-src and media-src directives.
+If you use dots in your bucket name (`forcePathStyle set to false`), the url of the resource is in directory style (`s3.yourRegion.amazonaws.com/your.bucket.name/image.jpg`) instead of `yourBucketName.s3.yourRegion.amazonaws.com/image.jpg` so in that case the img-src and media-src directives to add will be `s3.yourRegion.amazonaws.com` without the bucket name in the url.
 
 ## Bucket CORS Configuration
 
@@ -200,3 +209,47 @@ These are the minimum amount of permissions needed for this provider to work.
   "s3:PutObjectAcl"
 ],
 ```
+
+## Update to AWS SDK V3 and URL Format Change
+
+In the recent update of the `@strapi/provider-upload-aws-s3` plugin, we have transitioned from AWS SDK V2 to AWS SDK V3. This significant update brings along a change in the format of the URLs used in Amazon S3 services.
+
+### Understanding the New URL Format
+
+AWS SDK V3 adopts the virtual-hosted–style URI format for S3 URLs. This format is recommended by AWS and is likely to become required in the near future, as the path-style URI is being deprecated. More details on this format can be found in the [AWS User Guide](https://docs.aws.amazon.com/AmazonS3/latest/userguide/VirtualHosting.html#virtual-hosted-style-access).
+
+### Why the Change?
+
+The move to virtual-hosted–style URIs aligns with AWS's recommendation and future-proofing strategies. For an in-depth understanding of AWS's decision behind this transition, you can refer to their detailed post [here](https://aws.amazon.com/es/blogs/aws/amazon-s3-path-deprecation-plan-the-rest-of-the-story/).
+
+### Configuring Your Strapi Application
+
+If you wish to continue using the plugin with Strapi 4.15.x versions or newer without changing your URL format, it's possible to specify your desired URL format directly in the plugin's configuration. Below is an example configuration highlighting the critical `baseUrl` property:
+
+```javascript
+upload: {
+  config: {
+    provider: 'aws-s3',
+    providerOptions: {
+      credentials: {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_ACCESS_SECRET,
+      },
+      region: process.env.AWS_REGION,
+      baseUrl: `https://s3.${region}.amazonaws.com/${bucket}`, // This line sets the custom url format
+      params: {
+        ACL: process.env.AWS_ACL || 'public-read',
+        signedUrlExpires: process.env.AWS_SIGNED_URL_EXPIRES || 15 * 60,
+        Bucket: process.env.AWS_BUCKET,
+      },
+    },
+    actionOptions: {
+      upload: {},
+      uploadStream: {},
+      delete: {},
+    },
+  },
+}
+```
+
+This configuration ensures compatibility with the updated AWS SDK while providing flexibility in URL format selection, catering to various user needs.

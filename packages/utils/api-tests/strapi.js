@@ -3,7 +3,7 @@
 const path = require('path');
 const _ = require('lodash');
 const dotenv = require('dotenv');
-const strapi = require('../../core/strapi/lib');
+const { createStrapi } = require('../../core/strapi');
 const { createUtils } = require('./utils');
 
 const superAdminCredentials = {
@@ -15,23 +15,25 @@ const superAdminCredentials = {
 
 const superAdminLoginInfo = _.pick(superAdminCredentials, ['email', 'password']);
 
-const TEST_APP_URL = path.resolve(__dirname, '../../../testApp');
-
 const createStrapiInstance = async ({
   ensureSuperAdmin = true,
-  logLevel = 'error',
+  logLevel = 'warn',
   bypassAuth = true,
+  bootstrap,
 } = {}) => {
   // read .env file as it could have been updated
   dotenv.config({ path: process.env.ENV_PATH });
+
+  const baseDir = path.dirname(process.env.ENV_PATH);
+
   const options = {
-    appDir: TEST_APP_URL,
-    distDir: TEST_APP_URL,
+    appDir: baseDir,
+    distDir: baseDir,
   };
-  const instance = strapi(options);
+  const instance = createStrapi(options);
 
   if (bypassAuth) {
-    instance.container.get('auth').register('content-api', {
+    instance.get('auth').register('content-api', {
       name: 'test-auth',
       authenticate() {
         return { authenticated: true };
@@ -39,6 +41,17 @@ const createStrapiInstance = async ({
       verify() {},
     });
   }
+
+  if (bootstrap) {
+    const modules = instance.get('modules');
+    const originalBootstrap = modules.bootstrap;
+    // decorate modules bootstrap
+    modules.bootstrap = async () => {
+      await originalBootstrap();
+      await bootstrap({ strapi: instance });
+    };
+  }
+
   await instance.load();
 
   instance.log.level = logLevel;

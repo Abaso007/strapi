@@ -2,7 +2,10 @@ import { pipeline } from 'stream';
 import fs, { ReadStream } from 'fs';
 import path from 'path';
 import fse from 'fs-extra';
-import utils from '@strapi/utils';
+import * as utils from '@strapi/utils';
+
+// Needed to load global.strapi without having to put @strapi/types in the regular dependencies
+import type {} from '@strapi/types';
 
 interface File {
   name: string;
@@ -15,6 +18,7 @@ interface File {
   ext?: string;
   mime: string;
   size: number;
+  sizeInBytes: number;
   url: string;
   previewUrl?: string;
   path?: string;
@@ -37,7 +41,7 @@ interface CheckFileSizeOptions {
   sizeLimit?: number;
 }
 
-export = {
+export default {
   init({ sizeLimit: providerOptionsSizeLimit }: InitOptions = {}) {
     // TODO V5: remove providerOptions sizeLimit
     if (providerOptionsSizeLimit) {

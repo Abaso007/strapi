@@ -1,8 +1,9 @@
-import { join } from 'path';
-import { cloneDeep } from 'lodash/fp';
+import { posix, win32 } from 'path';
+import { cloneDeep, get, set } from 'lodash/fp';
 import { Readable, Writable } from 'stream-chain';
-import type { Schema } from '@strapi/strapi';
+import type { Struct } from '@strapi/types';
 import { createTransferEngine, TRANSFER_STAGES } from '..';
+
 import type {
   IAsset,
   IConfiguration,
@@ -11,99 +12,40 @@ import type {
   ILink,
   ISourceProvider,
   ITransferEngineOptions,
+  TransferFilterPreset,
 } from '../../../types';
 import {
   extendExpectForDataTransferTests,
   providerStages,
   sourceStages,
 } from '../../__tests__/test-utils';
+import { TransferEngineValidationError } from '../errors';
 
 const getMockSourceStream = (data: Iterable<unknown>) => Readable.from(data);
 
-const getEntitiesMockSourceStream = (
-  data: Iterable<IEntity<'foo' | 'bar'>> = [
-    { id: 1, type: 'foo', data: { foo: 'bar' } },
-    { id: 2, type: 'bar', data: { bar: 'foo' } },
-  ]
-) => getMockSourceStream(data);
-
-const getLinksMockSourceStream = (
-  data: Iterable<ILink> = [
-    {
-      kind: 'relation.basic',
-      relation: 'oneToOne',
-      left: { type: 'foo', ref: 1, field: 'foo' },
-      right: { type: 'bar', ref: 2, field: 'bar' },
-    },
-    {
-      kind: 'relation.basic',
-      relation: 'oneToMany',
-      left: { type: 'foo', ref: 1, field: 'foos' },
-      right: { type: 'bar', ref: 2, field: 'bar' },
-    },
-  ]
-) => getMockSourceStream(data);
-
-const getAssetsMockSourceStream = (
-  data: Iterable<IAsset> = [
-    {
-      filename: 'foo.jpg',
-      filepath: join(__dirname, 'foo.jpg'),
-      stats: { size: 24 },
-      stream: Readable.from([1, 2, 3]),
-    },
-    {
-      filename: 'bar.jpg',
-      filepath: join(__dirname, 'bar.jpg'),
-      stats: { size: 48 },
-      stream: Readable.from([4, 5, 6, 7, 8, 9]),
-    },
-  ]
-) => getMockSourceStream(data);
-
-const getConfigurationMockSourceStream = (
-  data: Iterable<unknown> = [
-    { key: 'foo', value: 'alice' },
-    { key: 'bar', value: 'bob' },
-  ]
-) => getMockSourceStream(data);
-
-const getSchemasMockSourceStream = (
-  data: Iterable<Schema> = [
-    {
-      info: { displayName: 'foo' },
-      modelType: 'contentType',
-      attributes: { foo: { type: 'string' } },
-    },
-    {
-      info: { displayName: 'bar' },
-      modelType: 'contentType',
-      attributes: { bar: { type: 'integer' } },
-    },
-  ]
-) => getMockSourceStream(data);
-
-const getMockDestinationStream = () => {
-  const stream = new Writable({
-    objectMode: true,
-    write(chunk, encoding, callback) {
-      callback();
-    },
-  });
-  return stream;
-};
-
-extendExpectForDataTransferTests();
-
-const metadata = {
-  createdAt: '2022-11-23T09:26:43.463Z',
-  strapi: {
-    version: '1.2.3',
-  },
-};
-
-const schemas = [
+const defaultLinksData: Array<ILink> = [
   {
+    kind: 'relation.basic',
+    relation: 'oneToOne',
+    left: { type: 'api::foo.foo', ref: 1, field: 'foo' },
+    right: { type: 'api::bar.bar', ref: 2, field: 'bar' },
+  },
+  {
+    kind: 'relation.basic',
+    relation: 'oneToMany',
+    left: { type: 'api::foo.foo', ref: 1, field: 'foos' },
+    right: { type: 'api::bar.bar', ref: 2, field: 'bar' },
+  },
+  {
+    kind: 'relation.basic',
+    relation: 'oneToMany',
+    left: { type: 'basic.foo', field: 'foo', ref: 1 },
+    right: { type: 'api::foo.foo', ref: 1 },
+  },
+];
+
+const schemas = {
+  'admin::permission': {
     collectionName: 'admin_permissions',
     info: {
       name: 'Permission',
@@ -159,10 +101,10 @@ const schemas = [
     plugin: 'admin',
     globalId: 'AdminPermission',
   },
-  {
+  'api::homepage.homepage': {
     collectionName: 'homepages',
     info: { displayName: 'Homepage', singularName: 'homepage', pluralName: 'homepages' },
-    options: { draftAndPublish: true },
+    options: {},
     pluginOptions: { i18n: { localized: true } },
     attributes: {
       title: { type: 'string', required: true, pluginOptions: { i18n: { localized: true } } },
@@ -225,14 +167,173 @@ const schemas = [
     uid: 'api::homepage.homepage',
     globalId: 'Homepage',
   },
-];
+  'api::bar.bar': {
+    kind: 'collectionType',
+    collectionName: 'bars',
+    modelType: 'contentType',
+    info: {
+      singularName: 'bar',
+      pluralName: 'bars',
+      displayName: 'bar',
+      description: '',
+    },
+    options: {},
+    pluginOptions: {},
+    attributes: {
+      bar: {
+        type: 'integer',
+      },
+      foo: {
+        displayName: 'foo',
+        type: 'component',
+        repeatable: false,
+        component: 'basic.foo',
+      },
+    },
+  },
+  'api::foo.foo': {
+    kind: 'collectionType',
+    collectionName: 'foos',
+    modelType: 'contentType',
+    info: {
+      singularName: 'foo',
+      pluralName: 'foos',
+      displayName: 'foo',
+    },
+    options: {},
+    pluginOptions: {},
+    attributes: {
+      foo: {
+        type: 'string',
+      },
+    },
+  },
+  'basic.foo': {
+    collectionName: 'components_basic_foos',
+    info: { displayName: 'Good Basic' },
+    options: {},
+    attributes: {
+      foo: { type: 'relation', relation: 'oneToOne', target: 'api::foo.foo' },
+    },
+    modelType: 'component',
+    modelName: 'foo-basic',
+    uid: 'basic.foo',
+    globalId: 'ComponentBasicFoo',
+  },
+};
+
+type Entity = IEntity<
+  'api::foo.foo' | 'api::bar.bar' | 'admin::permission' | 'api::homepage.homepage'
+>;
+
+const getEntitiesMockSourceStream = (
+  data: Array<Entity> = [
+    { id: 1, type: 'api::foo.foo', data: { foo: 'bar' } },
+    { id: 2, type: 'api::bar.bar', data: { bar: 'foo' } },
+    { id: 1, type: 'admin::permission', data: { foo: 'bar' } },
+    { id: 2, type: 'api::homepage.homepage', data: { bar: 'foo' } },
+  ]
+) => getMockSourceStream(data);
+
+const getLinksMockSourceStream = (data: Array<ILink> = defaultLinksData) =>
+  getMockSourceStream(data);
+
+const getAssetsMockSourceStream = (
+  data: Iterable<IAsset> = [
+    {
+      filename: 'foo.jpg',
+      filepath: posix.join(__dirname, 'foo.jpg'), // test a file with a posix path
+      stats: { size: 24 },
+      stream: Readable.from([1, 2, 3]),
+    },
+    {
+      filename: 'bar.jpg',
+      filepath: win32.join(__dirname, 'bar.jpg'), // test a file with a win32 path
+      stats: { size: 48 },
+      stream: Readable.from([4, 5, 6, 7, 8, 9]),
+    },
+  ]
+) => getMockSourceStream(data);
+
+const getConfigurationMockSourceStream = (
+  data: Iterable<unknown> = [
+    { key: 'foo', value: 'alice' },
+    { key: 'bar', value: 'bob' },
+  ]
+) => getMockSourceStream(data);
+
+const getSchemasMockSourceStream = (
+  data: Array<Struct.Schema> = [
+    {
+      uid: 'api::foo.foo',
+      kind: 'collectionType',
+      modelName: 'foo',
+      globalId: 'foo',
+      info: { displayName: 'foo', singularName: 'foo', pluralName: 'foos' },
+      modelType: 'contentType',
+      attributes: { foo: { type: 'string' } },
+    },
+    {
+      uid: 'api::bar.bar',
+      kind: 'collectionType',
+      modelName: 'bar',
+      globalId: 'bar',
+      info: { displayName: 'bar', singularName: 'bar', pluralName: 'bars' },
+      modelType: 'contentType',
+      attributes: { bar: { type: 'integer' } },
+    },
+    {
+      uid: 'api::homepage.homepage',
+      kind: 'collectionType',
+      modelName: 'homepage',
+      globalId: 'homepage',
+      info: { displayName: 'Homepage', singularName: 'homepage', pluralName: 'homepages' },
+      modelType: 'contentType',
+      attributes: {
+        action: { type: 'string' },
+      },
+    },
+    {
+      uid: 'api::permission.permission',
+      kind: 'collectionType',
+      modelName: 'permission',
+      globalId: 'permission',
+      info: { displayName: 'Permission', singularName: 'permission', pluralName: 'permissions' },
+      modelType: 'contentType',
+      attributes: {
+        action: { type: 'string' },
+      },
+    },
+  ]
+) => getMockSourceStream(data);
+
+const getMockDestinationStream = (listener?: any) => {
+  return new Writable({
+    objectMode: true,
+    write(chunk, encoding, callback) {
+      if (listener) {
+        listener(chunk);
+      }
+      callback();
+    },
+  });
+};
+
+extendExpectForDataTransferTests();
+
+const metadata = {
+  createdAt: '2022-11-23T09:26:43.463Z',
+  strapi: {
+    version: '1.2.3',
+  },
+};
 
 const createSource = (streamData?: {
   assets?: IAsset[];
-  entities?: IEntity[];
+  entities?: Entity[];
   links?: ILink[];
   configuration?: IConfiguration[];
-  schemas?: Schema[];
+  schemas?: Struct.Schema[];
 }): ISourceProvider => {
   return {
     type: 'source',
@@ -259,7 +360,9 @@ const createSource = (streamData?: {
   };
 };
 
-const createDestination = (): IDestinationProvider => {
+const createDestination = (
+  overrideOptions?: Partial<IDestinationProvider>
+): IDestinationProvider => {
   return {
     type: 'destination',
     name: 'completeDestination',
@@ -268,12 +371,12 @@ const createDestination = (): IDestinationProvider => {
 
     bootstrap: jest.fn(),
     close: jest.fn(),
-
     createEntitiesWriteStream: jest.fn().mockResolvedValue(getMockDestinationStream()),
     createLinksWriteStream: jest.fn().mockResolvedValue(getMockDestinationStream()),
     createAssetsWriteStream: jest.fn().mockResolvedValue(getMockDestinationStream()),
     createConfigurationWriteStream: jest.fn().mockResolvedValue(getMockDestinationStream()),
     createSchemasWriteStream: jest.fn().mockResolvedValue(getMockDestinationStream()),
+    ...overrideOptions,
   };
 };
 
@@ -300,8 +403,8 @@ describe('Transfer engine', () => {
     exclude: [],
   } as unknown as ITransferEngineOptions;
 
-  let completeSource;
-  let completeDestination;
+  let completeSource: ISourceProvider;
+  let completeDestination: IDestinationProvider;
 
   beforeEach(() => {
     jest.restoreAllMocks();
@@ -333,7 +436,7 @@ describe('Transfer engine', () => {
       const engine = createTransferEngine(minimalSource, minimalDestination, defaultOptions);
       expect(engine).toBeValidTransferEngine();
       await engine.transfer();
-      expect(minimalSource).toHaveSourceStagesCalledTimes(1);
+      expect(minimalSource).toHaveAllSourceStagesCalledTimes(1);
     });
 
     test('bootstraps all providers with a bootstrap', async () => {
@@ -349,20 +452,182 @@ describe('Transfer engine', () => {
       expect(engine).toBeValidTransferEngine();
       await engine.transfer();
 
-      expect(minimalSource).toHaveSourceStagesCalledTimes(1);
+      expect(minimalSource).toHaveAllSourceStagesCalledTimes(1);
     });
   });
 
   describe('transfer', () => {
     test('calls all provider stages', async () => {
       const engine = createTransferEngine(completeSource, completeDestination, defaultOptions);
-      expect(completeSource).toHaveSourceStagesCalledTimes(0);
-      expect(completeDestination).toHaveDestinationStagesCalledTimes(0);
+      expect(completeSource).toHaveAllSourceStagesCalledTimes(0);
+      expect(completeDestination).toHaveAllDestinationStagesCalledTimes(0);
       await engine.transfer();
 
-      expect(completeSource).toHaveSourceStagesCalledTimes(1);
-      expect(completeDestination).toHaveDestinationStagesCalledTimes(1);
+      expect(completeSource).toHaveAllSourceStagesCalledTimes(1);
+      expect(completeDestination).toHaveAllDestinationStagesCalledTimes(1);
     });
+
+    test.each<
+      // (givenStages, mustBeCalled, mustNotBeCalled)
+      [TransferFilterPreset[], (keyof IDestinationProvider)[], (keyof IDestinationProvider)[]]
+    >([
+      [
+        // javascript could send undefined
+        undefined as unknown as TransferFilterPreset[],
+        [
+          'bootstrap',
+          'createSchemasWriteStream',
+          'createLinksWriteStream',
+          'createEntitiesWriteStream',
+          'createConfigurationWriteStream',
+          'createAssetsWriteStream',
+        ],
+        [],
+      ],
+      [
+        [],
+        [
+          'bootstrap',
+          'createSchemasWriteStream',
+          'createLinksWriteStream',
+          'createEntitiesWriteStream',
+          'createConfigurationWriteStream',
+          'createAssetsWriteStream',
+        ],
+        [],
+      ],
+      [
+        ['files'],
+        [
+          'bootstrap',
+          'createSchemasWriteStream',
+          'createLinksWriteStream',
+          'createEntitiesWriteStream',
+          'createConfigurationWriteStream',
+        ],
+        ['createAssetsWriteStream'],
+      ],
+      [
+        ['content'],
+        [
+          'bootstrap',
+          'createSchemasWriteStream',
+          'createAssetsWriteStream',
+          'createConfigurationWriteStream',
+        ],
+        ['createLinksWriteStream', 'createEntitiesWriteStream'],
+      ],
+      [
+        ['content', 'config'],
+        ['bootstrap', 'createSchemasWriteStream', 'createAssetsWriteStream'],
+        ['createLinksWriteStream', 'createEntitiesWriteStream', 'createConfigurationWriteStream'],
+      ],
+      [
+        ['content', 'config', 'files'],
+        ['bootstrap', 'createSchemasWriteStream'],
+        [
+          'createAssetsWriteStream',
+          'createLinksWriteStream',
+          'createEntitiesWriteStream',
+          'createConfigurationWriteStream',
+        ],
+      ],
+    ])(
+      `'exclude' options includes correct stages with %s`,
+      async (excludeStages, mustBeCalled, mustNotBeCalled) => {
+        const engine = createTransferEngine(completeSource, completeDestination, {
+          ...defaultOptions,
+          exclude: excludeStages,
+        });
+
+        await engine.transfer();
+
+        expect(completeDestination).toHaveDestinationStagesCalledTimes(mustBeCalled, 1);
+        expect(completeDestination).toHaveDestinationStagesCalledTimes(mustNotBeCalled, 0);
+      }
+    );
+
+    test.each<
+      // (givenStages, mustBeCalled, mustNotBeCalled)
+      [TransferFilterPreset[], (keyof IDestinationProvider)[], (keyof IDestinationProvider)[]]
+    >([
+      [
+        // javascript could send undefined
+        undefined as unknown as TransferFilterPreset[],
+        [
+          'bootstrap',
+          'createSchemasWriteStream',
+          'createLinksWriteStream',
+          'createEntitiesWriteStream',
+          'createConfigurationWriteStream',
+          'createAssetsWriteStream',
+        ],
+        [],
+      ],
+      [
+        [],
+        [
+          'bootstrap',
+          'createSchemasWriteStream',
+          'createLinksWriteStream',
+          'createEntitiesWriteStream',
+          'createConfigurationWriteStream',
+          'createAssetsWriteStream',
+        ],
+        [],
+      ],
+      [
+        ['files'],
+        ['bootstrap', 'createSchemasWriteStream', 'createAssetsWriteStream'],
+        ['createLinksWriteStream', 'createEntitiesWriteStream', 'createConfigurationWriteStream'],
+      ],
+      [
+        ['content'],
+        [
+          'bootstrap',
+          'createSchemasWriteStream',
+          'createLinksWriteStream',
+          'createEntitiesWriteStream',
+        ],
+        ['createAssetsWriteStream', 'createConfigurationWriteStream'],
+      ],
+      [
+        ['content', 'config'],
+        [
+          'bootstrap',
+          'createSchemasWriteStream',
+          'createLinksWriteStream',
+          'createEntitiesWriteStream',
+          'createConfigurationWriteStream',
+        ],
+        ['createAssetsWriteStream'],
+      ],
+      [
+        ['content', 'config', 'files'],
+        [
+          'bootstrap',
+          'createSchemasWriteStream',
+          'createLinksWriteStream',
+          'createEntitiesWriteStream',
+          'createConfigurationWriteStream',
+          'createAssetsWriteStream',
+        ],
+        [],
+      ],
+    ])(
+      `'only' option includes correct stages with %s`,
+      async (onlyStages, mustBeCalled, mustNotBeCalled) => {
+        const engine = createTransferEngine(completeSource, completeDestination, {
+          ...defaultOptions,
+          only: onlyStages,
+        });
+
+        await engine.transfer();
+
+        expect(completeDestination).toHaveDestinationStagesCalledTimes(mustBeCalled, 1);
+        expect(completeDestination).toHaveDestinationStagesCalledTimes(mustNotBeCalled, 0);
+      }
+    );
 
     test('returns provider results', async () => {
       const source = {
@@ -424,7 +689,7 @@ describe('Transfer engine', () => {
 
       // Two values are emitted by default for each stage
       // TODO: this is no longer true, we should be checking the sum of the various mocked streams
-      const itemPerStage = 2;
+      const itemPerStage = 3;
 
       expect(calls).toEqual((sourceStages.length - providerStages.length) * itemPerStage);
     });
@@ -481,6 +746,24 @@ describe('Transfer engine', () => {
 
       expect(calls).toEqual(3); // 3 deleted stages above
     });
+
+    test('relations inside components are transferred', async () => {
+      const processedLinks: ILink[] = [];
+
+      completeDestination = createDestination({
+        createLinksWriteStream: jest.fn().mockResolvedValue(
+          getMockDestinationStream((chunk: ILink) => {
+            processedLinks.push(chunk);
+          })
+        ),
+      });
+      const engine = createTransferEngine(completeSource, completeDestination, defaultOptions);
+
+      await engine.transferLinks();
+
+      expect(completeDestination.createLinksWriteStream).toHaveBeenCalled();
+      expect(processedLinks).toStrictEqual(defaultLinksData);
+    });
   });
 
   describe('integrity checks', () => {
@@ -491,9 +774,10 @@ describe('Transfer engine', () => {
           schemaStrategy: 'exact',
           exclude: [],
         } as unknown as ITransferEngineOptions;
+
         test('source with source schema missing in destination fails', async () => {
           const source = createSource();
-          source.getSchemas = jest.fn().mockResolvedValue([...schemas, { foo: 'bar' }]);
+          source.getSchemas = jest.fn().mockResolvedValue({ ...schemas, foo: { foo: 'bar' } });
           const engine = createTransferEngine(source, completeDestination, engineOptions);
           expect(
             (async () => {
@@ -501,9 +785,10 @@ describe('Transfer engine', () => {
             })()
           ).rejects.toThrow();
         });
+
         test('source with destination schema missing in source fails', async () => {
           const destination = createDestination();
-          destination.getSchemas = jest.fn().mockResolvedValue([...schemas, { foo: 'bar' }]);
+          destination.getSchemas = jest.fn().mockResolvedValue({ ...schemas, foo: { foo: 'bar' } });
           const engine = createTransferEngine(completeSource, destination, engineOptions);
           expect(
             (async () => {
@@ -511,12 +796,13 @@ describe('Transfer engine', () => {
             })()
           ).rejects.toThrow();
         });
+
         test('differing nested field fails', async () => {
           const destination = createDestination();
           const fakeSchema = cloneDeep(schemas);
 
-          if (fakeSchema[0].attributes.action) {
-            fakeSchema[0].attributes.action.minLength = 2;
+          if (fakeSchema['admin::permission'].attributes.action) {
+            fakeSchema['admin::permission'].attributes.action.minLength = 2;
           }
 
           destination.getSchemas = jest.fn().mockResolvedValue(fakeSchema);
@@ -526,6 +812,67 @@ describe('Transfer engine', () => {
               await engine.transfer();
             })()
           ).rejects.toThrow();
+        });
+      });
+
+      describe('strict', () => {
+        const engineOptions = {
+          versionStrategy: 'exact',
+          schemaStrategy: 'strict',
+          exclude: [],
+        } as unknown as ITransferEngineOptions;
+
+        test.each([
+          ['private', (v: boolean) => !v],
+          ['required', (v: boolean) => !v],
+          ['configurable', (v: boolean) => v],
+          ['default', () => () => null],
+        ])(
+          `Don't throw on ignorable attribute's properties: %s`,
+          (attributeName, transformValue) => {
+            const destination = createDestination();
+            const fakeSchemas = cloneDeep(schemas);
+
+            const path = `attributes.createdAt.${attributeName}`;
+            const oldValue = get(path, fakeSchemas['api::homepage.homepage']);
+
+            fakeSchemas['api::homepage.homepage'] = set(
+              path,
+              transformValue(oldValue),
+              fakeSchemas['api::homepage.homepage']
+            );
+
+            destination.getSchemas = jest.fn().mockResolvedValue(fakeSchemas);
+            const engine = createTransferEngine(completeSource, destination, engineOptions);
+
+            expect(
+              (async () => {
+                await engine.transfer();
+              })()
+            ).resolves.not.toThrow();
+          }
+        );
+
+        test(`Throws on regular attributes' properties`, () => {
+          const destination = createDestination();
+          const fakeSchemas = set(
+            '["api::homepage.homepage"].attributes.createdAt.type',
+            'string',
+            cloneDeep(schemas)
+          );
+
+          destination.getSchemas = jest.fn().mockResolvedValue(fakeSchemas);
+          const engine = createTransferEngine(completeSource, destination, engineOptions);
+
+          expect(
+            (async () => {
+              await engine.transfer();
+            })()
+          ).rejects.toThrow(
+            new TransferEngineValidationError(`Invalid schema changes detected during integrity checks (using the strict strategy). Please find a summary of the changes below:
+- api::homepage.homepage:
+  - Schema value changed at "attributes.createdAt.type": "datetime" (string) => "string" (string)`)
+          );
         });
       });
     });
